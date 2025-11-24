@@ -1,5 +1,4 @@
-import React from 'react';
-import { useLocalStorage } from './hooks/useLocalStorage';
+import React, { useState, useEffect } from 'react';
 import { Customer, LotteryEntry, Payment, Settings, View, LotteryType } from './types';
 import { BottomNav } from './components/BottomNav';
 import { Dashboard } from './components/Dashboard';
@@ -9,66 +8,279 @@ import { Payments } from './components/Payments';
 import { SettingsComponent } from './components/Settings';
 import { Reports } from './components/Reports';
 import { LotteryResults } from './components/LotteryResults';
-
-// --- MOCK DATA ---
-const createMockCustomers = (): Customer[] => [
-    { id: 'c1', name: 'สมชาย ใจดี', phone: '081-234-5678', createdAt: new Date().toISOString() },
-    { id: 'c2', name: 'สมศรี มีสุข', phone: '082-345-6789', createdAt: new Date().toISOString() },
-    { id: 'c3', name: 'มานะ อดทน', phone: '083-456-7890', createdAt: new Date().toISOString() },
-];
-
-const createMockEntries = (): LotteryEntry[] => [
-    { id: 'e1', customerId: 'c1', drawDate: new Date().toISOString().split('T')[0], type: LotteryType.TOP_3, number: '123', amount: 100, payoutRate: 500, createdAt: new Date().toISOString() },
-    { id: 'e2', customerId: 'c1', drawDate: new Date().toISOString().split('T')[0], type: LotteryType.BOTTOM_2, number: '45', amount: 50, payoutRate: 90, createdAt: new Date().toISOString() },
-    { id: 'e3', customerId: 'c2', drawDate: new Date().toISOString().split('T')[0], type: LotteryType.TOP_2, number: '88', amount: 200, payoutRate: 90, createdAt: new Date().toISOString() },
-    { id: 'e4', customerId: 'c3', drawDate: new Date().toISOString().split('T')[0], type: LotteryType.RUN_BOTTOM, number: '7', amount: 1000, payoutRate: 4, createdAt: new Date().toISOString() },
-    { id: 'e5', customerId: 'c2', drawDate: new Date().toISOString().split('T')[0], type: LotteryType.TOD_3, number: '321', amount: 10, payoutRate: 100, createdAt: new Date().toISOString() },
-];
-
-const createMockPayments = (): Payment[] => [
-    { id: 'p1', customerId: 'c1', amount: 100, date: '2023-10-16', method: 'TRANSFER' as any },
-];
+import { supabase } from './lib/supabase';
 
 const defaultSettings: Settings = {
   theme: 'light',
   payoutRates: {
-    [LotteryType.TOP_3]: 500,
-    [LotteryType.BOTTOM_3]: 150,
-    [LotteryType.FRONT_3]: 150,
-    [LotteryType.TOD_3]: 100,
+    [LotteryType.TOP_3]: 900,
+    [LotteryType.BOTTOM_3]: 450,
+    [LotteryType.FRONT_3]: 450,
+    [LotteryType.TOD_3]: 150,
     [LotteryType.TOP_2]: 90,
     [LotteryType.BOTTOM_2]: 90,
-    [LotteryType.RUN_TOP]: 3,
-    [LotteryType.RUN_BOTTOM]: 4,
+    [LotteryType.RUN_TOP]: 3.2,
+    [LotteryType.RUN_BOTTOM]: 4.2,
   },
 };
 
-
 const App: React.FC = () => {
-    const [activeView, setActiveView] = useLocalStorage<View>('activeView', 'DASHBOARD');
-    const [customers, setCustomers] = useLocalStorage<Customer[]>('customers', createMockCustomers());
-    const [entries, setEntries] = useLocalStorage<LotteryEntry[]>('entries', createMockEntries());
-    const [payments, setPayments] = useLocalStorage<Payment[]>('payments', createMockPayments());
-    const [settings, setSettings] = useLocalStorage<Settings>('settings', defaultSettings);
+    const [activeView, setActiveView] = useState<View>('DASHBOARD');
+    const [customers, setCustomers] = useState<Customer[]>([]);
+    const [entries, setEntries] = useState<LotteryEntry[]>([]);
+    const [payments, setPayments] = useState<Payment[]>([]);
+    const [settings, setSettings] = useState<Settings>(defaultSettings);
+    const [isLoading, setIsLoading] = useState(false);
 
-    const addEntry = (entry: Omit<LotteryEntry, 'id' | 'createdAt'>) => {
-        setEntries(prev => [...prev, { ...entry, id: `e${Date.now()}`, createdAt: new Date().toISOString() }]);
+    // --- Data Fetching ---
+    const fetchData = async () => {
+        setIsLoading(true);
+        try {
+            // 1. Fetch Customers
+            const { data: custData, error: custError } = await supabase
+                .from('customers')
+                .select('*')
+                .order('created_at', { ascending: true });
+            
+            if (custError) throw custError;
+            
+            if (custData) {
+                setCustomers(custData.map(c => ({
+                    id: c.id,
+                    name: c.name,
+                    phone: c.phone,
+                    createdAt: c.created_at
+                })));
+            }
+
+            // 2. Fetch Entries
+            const { data: entryData, error: entryError } = await supabase
+                .from('lottery_entries')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (entryError) throw entryError;
+
+            if (entryData) {
+                setEntries(entryData.map(e => ({
+                    id: e.id,
+                    customerId: e.customer_id,
+                    drawDate: e.draw_date,
+                    type: e.type as LotteryType,
+                    number: e.number,
+                    amount: e.amount,
+                    payoutRate: e.payout_rate,
+                    createdAt: e.created_at
+                })));
+            }
+
+            // 3. Fetch Payments
+            const { data: payData, error: payError } = await supabase
+                .from('payments')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (payError) throw payError;
+
+            if (payData) {
+                setPayments(payData.map(p => ({
+                    id: p.id,
+                    customerId: p.customer_id,
+                    amount: p.amount,
+                    date: p.date,
+                    method: p.method as any,
+                })));
+            }
+
+            // 4. Fetch Settings & Payout Rates
+            const { data: settingData } = await supabase.from('settings').select('*').limit(1).single();
+            const { data: rateData } = await supabase.from('payout_rates').select('*');
+
+            const newSettings = { ...defaultSettings };
+            
+            if (settingData) {
+                newSettings.theme = settingData.theme === 'dark' ? 'dark' : 'light';
+            }
+            
+            if (rateData && rateData.length > 0) {
+                rateData.forEach(r => {
+                    if (r.type && r.rate) {
+                        newSettings.payoutRates[r.type as LotteryType] = Number(r.rate);
+                    }
+                });
+            }
+            setSettings(newSettings);
+
+        } catch (error) {
+            console.error("Error fetching data:", error);
+            // Optionally handle error UI here
+        } finally {
+            setIsLoading(false);
+        }
     };
-    
-    const addCustomer = (customer: Omit<Customer, 'id' | 'createdAt'>) => {
-        setCustomers(prev => [...prev, { ...customer, id: `c${Date.now()}`, createdAt: new Date().toISOString() }]);
+
+    useEffect(() => {
+        fetchData();
+    }, []);
+
+    // Apply theme
+    useEffect(() => {
+        if (settings.theme === 'dark') {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    }, [settings.theme]);
+
+
+    // --- Actions ---
+
+    const addCustomer = async (customer: Omit<Customer, 'id' | 'createdAt'>) => {
+        try {
+            const { data, error } = await supabase
+                .from('customers')
+                .insert([{ name: customer.name, phone: customer.phone }])
+                .select()
+                .single();
+            
+            if (error) throw error;
+            if (data) {
+                setCustomers(prev => [...prev, {
+                    id: data.id,
+                    name: data.name,
+                    phone: data.phone,
+                    createdAt: data.created_at
+                }]);
+            }
+        } catch (error) {
+            console.error("Error adding customer:", error);
+            alert("เกิดข้อผิดพลาดในการเพิ่มลูกค้า");
+        }
     };
-    
-    const addPayment = (payment: Omit<Payment, 'id'>) => {
-        setPayments(prev => [...prev, { ...payment, id: `p${Date.now()}` }]);
+
+    const addEntriesBatch = async (newEntries: Omit<LotteryEntry, 'id' | 'createdAt'>[]) => {
+        try {
+            const dbEntries = newEntries.map(e => ({
+                customer_id: e.customerId,
+                draw_date: e.drawDate,
+                type: e.type,
+                number: e.number,
+                amount: e.amount,
+                payout_rate: e.payoutRate
+            }));
+
+            const { data, error } = await supabase
+                .from('lottery_entries')
+                .insert(dbEntries)
+                .select();
+
+            if (error) throw error;
+
+            if (data) {
+                const mappedEntries = data.map(e => ({
+                    id: e.id,
+                    customerId: e.customer_id,
+                    drawDate: e.draw_date,
+                    type: e.type as LotteryType,
+                    number: e.number,
+                    amount: e.amount,
+                    payoutRate: e.payout_rate,
+                    createdAt: e.created_at
+                }));
+                setEntries(prev => [...prev, ...mappedEntries]);
+                alert("บันทึกรายการเรียบร้อยแล้ว");
+            }
+        } catch (error) {
+            console.error("Error adding entries:", error);
+            alert("เกิดข้อผิดพลาดในการบันทึกรายการ");
+        }
+    };
+
+    const addPayment = async (payment: Omit<Payment, 'id'>) => {
+        try {
+            const { data, error } = await supabase
+                .from('payments')
+                .insert([{
+                    customer_id: payment.customerId,
+                    amount: payment.amount,
+                    date: payment.date,
+                    method: payment.method
+                }])
+                .select()
+                .single();
+
+            if (error) throw error;
+
+            if (data) {
+                setPayments(prev => [...prev, {
+                    id: data.id,
+                    customerId: data.customer_id,
+                    amount: data.amount,
+                    date: data.date,
+                    method: data.method as any
+                }]);
+            }
+        } catch (error) {
+            console.error("Error adding payment:", error);
+            alert("เกิดข้อผิดพลาดในการบันทึกการชำระเงิน");
+        }
+    };
+
+    const saveSettings = async (newSettings: Settings) => {
+        try {
+            // 1. Update Theme (in settings table)
+            // We assume there is only one row for settings or we upsert.
+            // First check if a row exists
+            const { data: existingSettings } = await supabase.from('settings').select('id').limit(1);
+            
+            if (existingSettings && existingSettings.length > 0) {
+                await supabase.from('settings').update({ theme: newSettings.theme }).eq('id', existingSettings[0].id);
+            } else {
+                await supabase.from('settings').insert({ theme: newSettings.theme });
+            }
+
+            // 2. Update Payout Rates (upsert each)
+            const ratesToUpsert = Object.entries(newSettings.payoutRates).map(([type, rate]) => ({
+                type,
+                rate
+            }));
+
+            const { error: rateError } = await supabase
+                .from('payout_rates')
+                .upsert(ratesToUpsert, { onConflict: 'type' });
+
+            if (rateError) throw rateError;
+
+            setSettings(newSettings);
+            alert("บันทึกการตั้งค่าเรียบร้อยแล้ว");
+
+        } catch (error) {
+            console.error("Error saving settings:", error);
+            alert("เกิดข้อผิดพลาดในการบันทึกการตั้งค่า");
+        }
     };
 
     const renderView = () => {
+        if (isLoading) {
+            return (
+                <div className="flex items-center justify-center min-h-[50vh]">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                </div>
+            );
+        }
+
         switch (activeView) {
             case 'DASHBOARD':
                 return <Dashboard entries={entries} customers={customers} />;
             case 'ENTRY':
-                return <LotteryEntryForm customers={customers} entries={entries} addEntry={addEntry} />;
+                return (
+                    <LotteryEntryForm 
+                        customers={customers} 
+                        entries={entries} 
+                        onSaveEntries={addEntriesBatch} 
+                        settings={settings}
+                    />
+                );
             case 'CUSTOMERS':
                 return <Customers customers={customers} entries={entries} payments={payments} addCustomer={addCustomer} />;
             case 'PAYMENTS':
@@ -78,7 +290,7 @@ const App: React.FC = () => {
             case 'RESULTS':
                 return <LotteryResults entries={entries} customers={customers} settings={settings} />;
             case 'SETTINGS':
-                return <SettingsComponent settings={settings} setSettings={setSettings} />;
+                return <SettingsComponent settings={settings} setSettings={setSettings} onSave={saveSettings} />;
             default:
                 return <Dashboard entries={entries} customers={customers} />;
         }

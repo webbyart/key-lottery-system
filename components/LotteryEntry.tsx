@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Customer, LotteryEntry, LotteryType } from '../types';
+import { Customer, LotteryEntry, LotteryType, Settings } from '../types';
 
 interface LotteryEntryProps {
   customers: Customer[];
   entries: LotteryEntry[];
-  addEntry: (entry: Omit<LotteryEntry, 'id' | 'createdAt'>) => void;
+  settings: Settings;
+  onSaveEntries: (entries: Omit<LotteryEntry, 'id' | 'createdAt'>[]) => Promise<void>;
 }
 
 // Define the shape of a single entry row in the form
@@ -15,8 +16,9 @@ interface EntryRow {
   amount: number | '';
 }
 
-export const LotteryEntryForm: React.FC<LotteryEntryProps> = ({ customers, entries, addEntry }) => {
+export const LotteryEntryForm: React.FC<LotteryEntryProps> = ({ customers, entries, onSaveEntries, settings }) => {
   const [customerId, setCustomerId] = useState<string>(customers[0]?.id || '');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   
   // State to hold the list of entry rows, starting with one empty row.
   const [entryRows, setEntryRows] = useState<EntryRow[]>([
@@ -44,29 +46,36 @@ export const LotteryEntryForm: React.FC<LotteryEntryProps> = ({ customers, entri
     ));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    let entriesAdded = 0;
-    // Loop through each row and add it as a new entry if valid
+    if (!customerId) return;
+    
+    setIsSubmitting(true);
+    
+    const validEntries: Omit<LotteryEntry, 'id' | 'createdAt'>[] = [];
+    const drawDate = new Date().toISOString().split('T')[0];
+
     entryRows.forEach(row => {
       const amountNumber = Number(row.amount);
-      if (customerId && row.number && !isNaN(amountNumber) && amountNumber > 0) {
-        addEntry({
+      if (row.number && !isNaN(amountNumber) && amountNumber > 0) {
+        validEntries.push({
           customerId,
           type: row.type,
           number: row.number,
           amount: amountNumber,
-          payoutRate: 90, // Example rate, ideally from settings
-          drawDate: new Date().toISOString().split('T')[0],
+          payoutRate: settings.payoutRates[row.type] || 0, // Get rate from settings
+          drawDate: drawDate,
         });
-        entriesAdded++;
       }
     });
 
-    // If any entries were successfully added, reset the form
-    if (entriesAdded > 0) {
-      setEntryRows([{ key: Date.now(), type: LotteryType.TOP_2, number: '', amount: '' }]);
+    if (validEntries.length > 0) {
+        await onSaveEntries(validEntries);
+        // Reset form
+        setEntryRows([{ key: Date.now(), type: LotteryType.TOP_2, number: '', amount: '' }]);
     }
+    
+    setIsSubmitting(false);
   };
   
   const getCustomerName = (id: string) => customers.find(c => c.id === id)?.name || 'N/A';
@@ -83,6 +92,7 @@ export const LotteryEntryForm: React.FC<LotteryEntryProps> = ({ customers, entri
             onChange={(e) => setCustomerId(e.target.value)} 
             className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md"
             >
+            {customers.length === 0 && <option value="">ไม่พบข้อมูลลูกค้า</option>}
             {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
@@ -103,7 +113,7 @@ export const LotteryEntryForm: React.FC<LotteryEntryProps> = ({ customers, entri
                     onChange={(e) => handleRowChange(row.key, 'type', e.target.value as LotteryType)}
                     className="w-full pl-3 pr-10 py-2 text-base border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md"
                 >
-                  {Object.values(LotteryType).map(t => <option key={t} value={t}>{t}</option>)}
+                  {Object.values(LotteryType).map(t => <option key={t} value={t}>{t} (x{settings.payoutRates[t]})</option>)}
                 </select>
               </div>
               <div className="col-span-3">
@@ -148,8 +158,17 @@ export const LotteryEntryForm: React.FC<LotteryEntryProps> = ({ customers, entri
             <span>เพิ่มรายการ</span>
         </button>
 
-        <button type="submit" className="w-full bg-primary hover:bg-primary-600 text-white font-bold py-3 px-4 rounded-lg transition-colors text-base">
-          บันทึกทั้งหมด
+        <button 
+            type="submit" 
+            disabled={isSubmitting}
+            className="w-full bg-primary hover:bg-primary-600 disabled:bg-primary-300 text-white font-bold py-3 px-4 rounded-lg transition-colors text-base flex items-center justify-center"
+        >
+            {isSubmitting ? (
+                <>
+                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    กำลังบันทึก...
+                </>
+            ) : 'บันทึกทั้งหมด'}
         </button>
       </form>
       
@@ -163,15 +182,17 @@ export const LotteryEntryForm: React.FC<LotteryEntryProps> = ({ customers, entri
                 <th scope="col" className="px-6 py-3">ประเภท</th>
                 <th scope="col" className="px-6 py-3">เลข</th>
                 <th scope="col" className="px-6 py-3 text-right">จำนวนเงิน</th>
+                <th scope="col" className="px-6 py-3 text-right">เรทจ่าย</th>
               </tr>
             </thead>
             <tbody>
-              {entries.slice(-5).reverse().map(entry => (
+              {entries.slice(0, 5).map(entry => (
                 <tr key={entry.id} className="bg-white dark:bg-slate-800 border-b dark:border-slate-700">
                   <td className="px-6 py-4 font-medium text-slate-900 dark:text-white whitespace-nowrap">{getCustomerName(entry.customerId)}</td>
                   <td className="px-6 py-4">{entry.type}</td>
                   <td className="px-6 py-4">{entry.number}</td>
                   <td className="px-6 py-4 text-right">{entry.amount.toLocaleString()} ฿</td>
+                  <td className="px-6 py-4 text-right text-slate-400">{entry.payoutRate}</td>
                 </tr>
               ))}
             </tbody>
