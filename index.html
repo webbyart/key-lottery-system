@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>โปรแกรมคีหวย & จัดการลูกค้า</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              primary: {
+                DEFAULT: 'hsl(210, 80%, 55%)',
+                '50': 'hsl(210, 80%, 95%)',
+                '100': 'hsl(210, 80%, 90%)',
+                '200': 'hsl(210, 80%, 80%)',
+                '300': 'hsl(210, 80%, 70%)',
+                '400': 'hsl(210, 80%, 60%)',
+                '500': 'hsl(210, 80%, 55%)',
+                '600': 'hsl(210, 80%, 45%)',
+                '700': 'hsl(210, 80%, 35%)',
+                '800': 'hsl(210, 80%, 25%)',
+                '900': 'hsl(210, 80%, 15%)',
+                '950': 'hsl(210, 80%, 10%)',
+              },
+              gold: {
+                  DEFAULT: '#FFD700',
+                  'light': '#FFEC8B',
+                  'dark': '#B8860B',
+              },
+            },
+          }
+        }
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "recharts": "https://aistudiocdn.com/recharts@^3.4.1",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.3"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

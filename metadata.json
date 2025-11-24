@@ -1,0 +1,5 @@
+{
+  "name": "Lottery Management App",
+  "description": "A web application for recording lottery data, managing customers, tracking payments, and summarizing sales with a beautiful dashboard. Features include lottery entry, customer management, payment tracking, reports, and system settings.",
+  "requestFramePermissions": []
+}
