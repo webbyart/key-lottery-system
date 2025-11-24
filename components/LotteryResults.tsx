@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Customer, LotteryEntry, LotteryType, Settings, WinningEntryDetail } from '../types';
 
@@ -22,12 +23,42 @@ interface ExtendedWinningDetail extends WinningEntryDetail {
 }
 
 interface HistoryResult extends WinningNumbers {
-    date: string;
+    date: string; // ISO Format YYYY-MM-DD
+    apiId: string; // DDMMYYYY (BE)
     dateThai: string;
 }
 
+// --- Helpers ---
+
+const apiIdToIso = (id: string): string => {
+    // ID format is DDMMYYYY (Year is Buddhist Era)
+    // e.g., 16112568 -> Day 16, Month 11, Year 2568
+    if (!/^\d{8}$/.test(id)) return id;
+    const day = id.substring(0, 2);
+    const month = id.substring(2, 4);
+    const yearBE = parseInt(id.substring(4, 8));
+    const yearAD = yearBE - 543;
+    return `${yearAD}-${month}-${day}`;
+};
+
+const isoToApiId = (iso: string): string => {
+    // ISO format is YYYY-MM-DD
+    const parts = iso.split('-');
+    if (parts.length !== 3) return iso;
+    const [y, m, d] = parts;
+    const yearBE = parseInt(y) + 543;
+    return `${d}${m}${yearBE}`;
+};
+
+const formatThaiDate = (iso: string) => {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (isNaN(date.getTime())) return iso;
+    return date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
 export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, customers, settings }) => {
-    const [drawDate, setDrawDate] = useState(new Date().toISOString().split('T')[0]);
+    const [drawDate, setDrawDate] = useState(new Date().toISOString().split('T')[0]); // ISO String
     const [winningNumbers, setWinningNumbers] = useState<WinningNumbers>({
         top3: '',
         bottom2: '',
@@ -53,31 +84,29 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
     
     const getCustomerName = (id: string) => customers.find(c => c.id === id)?.name || 'N/A';
 
-    // Helper to format date for GLO API (dd/mm/yyyy - BE)
-    const toGloDate = (dateStr: string) => {
-        const [y, m, d] = dateStr.split('-');
-        const buddhistYear = parseInt(y) + 543;
-        return `${d}/${m}/${buddhistYear}`;
-    };
-
-    // Helper to format date for Display (Thai)
-    const toThaiDate = (dateStr: string) => {
-        const date = new Date(dateStr);
-        return date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
-    };
-
     // Core fetcher for a single date
-    const fetchSingleResult = async (dateStr: string): Promise<HistoryResult | null> => {
-        const gloDate = toGloDate(dateStr);
+    // Accepts either ISO (YYYY-MM-DD) or ID (DDMMYYYY)
+    const fetchSingleResult = async (dateInput: string): Promise<HistoryResult | null> => {
+        const isIdFormat = /^\d{8}$/.test(dateInput);
+        const apiId = isIdFormat ? dateInput : isoToApiId(dateInput);
+        const isoDate = isIdFormat ? apiIdToIso(dateInput) : dateInput;
+        
         let result: HistoryResult | null = null;
 
-        // 1. Try GLO API
+        // 1. Try GLO API (using calculated GLO date format DD/MM/YYYY)
+        // Note: GLO often blocks client-side calls due to CORS, but we keep logic just in case.
         try {
+            const gloDate = `${apiId.substring(0,2)}/${apiId.substring(2,4)}/${apiId.substring(4,8)}`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000); 
+
             const response = await fetch("https://www.glo.or.th/api/checking/getLotteryResult", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ date: gloDate })
+                body: JSON.stringify({ date: gloDate }),
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
 
             if (response.ok) {
                 const data = await response.json();
@@ -85,8 +114,9 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                     const d = data.response.data;
                     const firstPrize = d.first?.number?.[0] || '';
                     result = {
-                        date: dateStr,
-                        dateThai: toThaiDate(dateStr),
+                        date: isoDate,
+                        apiId: apiId,
+                        dateThai: formatThaiDate(isoDate),
                         firstPrizeFull: firstPrize,
                         top3: firstPrize.slice(-3),
                         bottom2: d.last2?.number?.[0] || '',
@@ -99,38 +129,62 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
             }
         } catch (e) {
             // GLO failed, proceed to fallback
-            console.warn(`GLO fetch failed for ${dateStr}`, e);
         }
 
         if (result) return result;
 
-        // 2. Try Fallback API (RayRiffy)
+        // 2. Try RayRiffy API (Primary Source)
         try {
-            const response = await fetch(`https://lotto.api.rayriffy.com/lotto/${dateStr}`);
+            const response = await fetch(`https://lotto.api.rayriffy.com/lotto/${apiId}`);
             if (response.ok) {
                 const data = await response.json();
-                if (data?.response?.prizes) {
-                    const p = data.response.prizes;
-                    const getPrize = (id: string) => p.find((x: any) => x.id === id);
-                    const first = getPrize('prizeFirst')?.number?.[0] || '';
-                    const front3 = getPrize('prizeFront3')?.number || [];
-                    const last3 = getPrize('prizeLast3')?.number || [];
+                
+                // Helper to safely get numbers from either prizes or runningNumbers
+                const getNumbers = (key: string) => {
+                    // Try prizes first (old structure)
+                    const fromPrizes = data.response?.prizes?.find((p: any) => p.id === key);
+                    if (fromPrizes) return fromPrizes.number;
+
+                    // Try runningNumbers (new structure)
+                    const fromRunning = data.response?.runningNumbers?.find((p: any) => p.id === key);
+                    if (fromRunning) return fromRunning.number;
+
+                    return [];
+                };
+
+                if (data?.response) {
+                    const first = getNumbers('prizeFirst')?.[0] || '';
                     
+                    // Retrieve all secondary prizes using new and old keys
+                    const front3 = getNumbers('runningNumberFrontThree');
+                    const last3 = getNumbers('runningNumberBackThree');
+                    const last2 = getNumbers('runningNumberBackTwo');
+                    
+                    // Fallback keys
+                    const front3Old = getNumbers('prizeFront3');
+                    const last3Old = getNumbers('prizeLast3');
+                    const last2Old = getNumbers('prizeLast2');
+
+                    const finalFront3 = front3 && front3.length ? front3 : (front3Old || []);
+                    const finalLast3 = last3 && last3.length ? last3 : (last3Old || []);
+                    const finalLast2 = last2 && last2.length ? last2 : (last2Old || []);
+
                     result = {
-                        date: dateStr,
-                        dateThai: toThaiDate(dateStr),
+                        date: isoDate,
+                        apiId: apiId,
+                        dateThai: formatThaiDate(isoDate),
                         firstPrizeFull: first,
                         top3: first.slice(-3),
-                        bottom2: getPrize('prizeLast2')?.number?.[0] || '',
-                        front3_1: front3[0] || '',
-                        front3_2: front3[1] || '',
-                        bottom3_1: last3[0] || '',
-                        bottom3_2: last3[1] || '',
+                        bottom2: finalLast2?.[0] || '',
+                        front3_1: finalFront3?.[0] || '',
+                        front3_2: finalFront3?.[1] || '',
+                        bottom3_1: finalLast3?.[0] || '',
+                        bottom3_2: finalLast3?.[1] || '',
                     };
                 }
             }
         } catch (e) {
-            console.warn(`Fallback fetch failed for ${dateStr}`, e);
+            console.warn(`Fallback fetch failed for ${apiId}`, e);
         }
 
         return result;
@@ -142,16 +196,16 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
         setFetchError('');
 
         try {
-            let allDates: string[] = [];
+            let allIds: string[] = [];
             let listFetchSuccess = false;
 
-            // 1. Try Get List of Dates
+            // 1. Try Get List of Dates (IDs)
             try {
                 const listRes = await fetch('https://lotto.api.rayriffy.com/list');
                 if (listRes.ok) {
                     const listData = await listRes.json();
                     if(listData.response && Array.isArray(listData.response)) {
-                         allDates = listData.response; 
+                         allIds = listData.response; // These are IDs like "16112568"
                          listFetchSuccess = true;
                     }
                 }
@@ -159,12 +213,13 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                  console.warn("Could not fetch date list:", e);
             }
             
-            if (listFetchSuccess && allDates.length > 0) {
-                // 2. Fetch Latest for Main Display
-                const latestDate = allDates[0];
-                setDrawDate(latestDate); 
+            if (listFetchSuccess && allIds.length > 0) {
+                const latestId = allIds[0];
+                const latestIso = apiIdToIso(latestId);
+                setDrawDate(latestIso); 
                 
-                const latestResult = await fetchSingleResult(latestDate);
+                // 2. Fetch Latest for Main Display
+                const latestResult = await fetchSingleResult(latestId);
                 if (latestResult) {
                     setWinningNumbers({
                         top3: latestResult.top3,
@@ -179,16 +234,23 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                     setFetchError('ไม่สามารถดึงข้อมูลรางวัลงวดล่าสุดได้');
                 }
 
-                // 3. Fetch History (Top 10)
-                const historyDates = allDates.slice(0, 10);
-                const historyPromises = historyDates.map(d => fetchSingleResult(d));
-                const historyResults = await Promise.all(historyPromises);
+                // 3. Fetch History (Top 24 - Approx 12 Months)
+                const historyIds = allIds.slice(0, 24);
+                const results: HistoryResult[] = [];
                 
-                setHistory(historyResults.filter((r): r is HistoryResult => r !== null));
+                // Fetch in small batches
+                const batchSize = 6;
+                for (let i = 0; i < historyIds.length; i += batchSize) {
+                    const batch = historyIds.slice(i, i + batchSize);
+                    const batchResults = await Promise.all(batch.map(id => fetchSingleResult(id)));
+                    results.push(...batchResults.filter((r): r is HistoryResult => r !== null));
+                    // Small delay
+                    await new Promise(r => setTimeout(r, 100));
+                }
+                
+                setHistory(results);
             } else {
-                 // If list fails, just try to fetch strictly for the currently selected date (today default)
-                 // This allows the page to load even if the history list API is down
-                 console.log("Fetching list failed, trying fallback for current date");
+                 // If list fails, just try to fetch using current drawDate state
                  const currentResult = await fetchSingleResult(drawDate);
                  if (currentResult) {
                     setWinningNumbers({
@@ -201,13 +263,11 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                         firstPrizeFull: currentResult.firstPrizeFull
                     });
                  }
-                 // We don't set a hard error here to allow user to manually input
             }
 
         } catch (error: any) {
             console.error("Main load error:", error);
-            // Don't show a blocking error, just log it. 
-            // setFetchError('โหลดข้อมูลล้มเหลว กรุณาลองใหม่อีกครั้ง');
+            setFetchError('โหลดข้อมูลล้มเหลว กรุณาลองใหม่อีกครั้ง');
         } finally {
             setIsLoading(false);
             setLoadingHistory(false);
@@ -218,6 +278,7 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
     const getLotteryResult = async () => {
         setIsLoading(true);
         try {
+            // drawDate is ISO, fetchSingleResult handles conversion
             const result = await fetchSingleResult(drawDate);
             if (result) {
                  setWinningNumbers({
@@ -309,7 +370,7 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
             bottom3_2: item.bottom3_2,
             firstPrizeFull: item.firstPrizeFull
         });
-        setResults(null); // Reset calculation results when switching
+        setResults(null); 
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
@@ -331,7 +392,7 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                         ) : (
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                         )}
-                        <span>ดึงผล (GLO)</span>
+                        <span>ดึงผลล่าสุด</span>
                     </button>
                 </div>
             </div>
@@ -489,87 +550,81 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                                             <td className="px-6 py-4">{r.entry.type}</td>
                                             <td className="px-6 py-4 text-center font-mono font-bold tracking-wider">{r.entry.number}</td>
                                             <td className="px-6 py-4 text-right text-slate-500">{r.entry.amount.toLocaleString()}</td>
-                                            <td className="px-6 py-4 text-right text-slate-400">x{r.usedRate}</td>
-                                            <td className="px-6 py-4 text-right font-bold text-emerald-600 dark:text-emerald-400">{r.prizeAmount.toLocaleString()} ฿</td>
+                                            <td className="px-6 py-4 text-right text-slate-400">{r.usedRate}</td>
+                                            <td className="px-6 py-4 text-right font-bold text-emerald-600 dark:text-emerald-400">{r.prizeAmount.toLocaleString()}</td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
                         ) : (
-                            <div className="text-center py-10 text-slate-500 dark:text-slate-400">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto mb-2 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                <p>ไม่พบผู้ถูกรางวัลในงวดนี้</p>
+                            <div className="text-center py-8 text-slate-500 dark:text-slate-400">
+                                ไม่พบรายการที่ถูกรางวัล
                             </div>
                         )}
                     </div>
-                 </div>
+                </div>
             )}
 
-            {/* Historical Results List (Bottom Section) */}
-            <div className="mt-8">
-                <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-4 flex items-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    ผลสลากกินแบ่งย้อนหลัง 10 งวด
-                </h2>
+            {/* History Table Section */}
+            <div className="mt-8 bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
+                <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-4">สถิติผลสลากกินแบ่งรัฐบาล ย้อนหลัง 12 เดือน (24 งวดล่าสุด)</h2>
                 
-                {loadingHistory ? (
-                     <div className="space-y-4">
-                        {[...Array(3)].map((_, i) => (
-                            <div key={i} className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md animate-pulse h-32"></div>
-                        ))}
-                     </div>
+                {loadingHistory && history.length === 0 ? (
+                    <div className="flex justify-center p-8">
+                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                    </div>
                 ) : (
-                    history.length > 0 ? (
-                        <div className="grid grid-cols-1 gap-4">
-                            {history.map((item, idx) => (
-                                <div key={idx} className="bg-white dark:bg-slate-800 p-4 md:p-6 rounded-xl shadow-md border border-slate-100 dark:border-slate-700 hover:shadow-lg transition-shadow">
-                                    <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-                                        <div className="flex flex-col items-center md:items-start min-w-[150px]">
-                                            <span className="text-sm text-slate-500 dark:text-slate-400">งวดวันที่</span>
-                                            <span className="text-lg font-bold text-slate-800 dark:text-white">{item.dateThai}</span>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm text-left text-slate-500 dark:text-slate-400">
+                            <thead className="text-xs text-slate-700 uppercase bg-slate-100 dark:bg-slate-900 dark:text-slate-300">
+                                <tr>
+                                    <th scope="col" className="px-4 py-3 whitespace-nowrap">งวดวันที่</th>
+                                    <th scope="col" className="px-4 py-3 text-center">รางวัลที่ 1</th>
+                                    <th scope="col" className="px-4 py-3 text-center">เลขหน้า 3 ตัว</th>
+                                    <th scope="col" className="px-4 py-3 text-center">เลขท้าย 3 ตัว</th>
+                                    <th scope="col" className="px-4 py-3 text-center">เลขท้าย 2 ตัว</th>
+                                    <th scope="col" className="px-4 py-3 text-center">เลือก</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {history.map((item, idx) => (
+                                    <tr key={idx} className="bg-white dark:bg-slate-800 border-b dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700">
+                                        <td className="px-4 py-3 whitespace-nowrap font-medium text-slate-900 dark:text-white">
+                                            {item.dateThai}
+                                        </td>
+                                        <td className="px-4 py-3 text-center font-bold text-amber-600 dark:text-amber-400 tracking-wider">
+                                            {item.firstPrizeFull || '-'}
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <div className="flex flex-col sm:flex-row justify-center sm:space-x-2">
+                                                <span>{item.front3_1 || '-'}</span>
+                                                <span className="hidden sm:inline">|</span>
+                                                <span>{item.front3_2 || '-'}</span>
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <div className="flex flex-col sm:flex-row justify-center sm:space-x-2">
+                                                <span>{item.bottom3_1 || '-'}</span>
+                                                <span className="hidden sm:inline">|</span>
+                                                <span>{item.bottom3_2 || '-'}</span>
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-center font-bold text-blue-600 dark:text-blue-400 text-lg">
+                                            {item.bottom2 || '-'}
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
                                             <button 
                                                 onClick={() => loadFromHistory(item)}
-                                                className="mt-2 text-xs bg-primary/10 text-primary hover:bg-primary/20 px-3 py-1 rounded-full font-medium transition-colors"
+                                                className="text-xs bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:bg-slate-700 dark:text-indigo-300 dark:hover:bg-slate-600 px-2 py-1 rounded border border-indigo-200 dark:border-slate-600"
                                             >
-                                                นำไปตรวจ
+                                                ตรวจสอบ
                                             </button>
-                                        </div>
-                                        
-                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
-                                            <div className="flex flex-col items-center p-3 bg-amber-50 dark:bg-amber-900/10 rounded-lg border border-amber-100 dark:border-amber-800/30">
-                                                <span className="text-xs text-amber-600 dark:text-amber-400 mb-1">รางวัลที่ 1</span>
-                                                <span className="font-bold text-xl text-amber-800 dark:text-amber-300">{item.firstPrizeFull || item.top3}</span>
-                                            </div>
-                                            <div className="flex flex-col items-center p-3 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-100 dark:border-blue-800/30">
-                                                <span className="text-xs text-blue-600 dark:text-blue-400 mb-1">เลขท้าย 2 ตัว</span>
-                                                <span className="font-bold text-xl text-blue-800 dark:text-blue-300">{item.bottom2}</span>
-                                            </div>
-                                            <div className="flex flex-col items-center p-3 bg-slate-50 dark:bg-slate-700/30 rounded-lg">
-                                                <span className="text-xs text-slate-500 dark:text-slate-400 mb-1">เลขหน้า 3 ตัว</span>
-                                                <div className="flex space-x-2 font-medium text-slate-700 dark:text-slate-200">
-                                                    <span>{item.front3_1}</span>
-                                                    <span className="text-slate-300">|</span>
-                                                    <span>{item.front3_2}</span>
-                                                </div>
-                                            </div>
-                                            <div className="flex flex-col items-center p-3 bg-slate-50 dark:bg-slate-700/30 rounded-lg">
-                                                <span className="text-xs text-slate-500 dark:text-slate-400 mb-1">เลขท้าย 3 ตัว</span>
-                                                <div className="flex space-x-2 font-medium text-slate-700 dark:text-slate-200">
-                                                    <span>{item.bottom3_1}</span>
-                                                    <span className="text-slate-300">|</span>
-                                                    <span>{item.bottom3_2}</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="text-center p-8 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700">
-                            <p className="text-slate-500 dark:text-slate-400">ไม่สามารถโหลดข้อมูลย้อนหลังได้ กรุณาค้นหาตามวันที่ด้านบน</p>
-                        </div>
-                    )
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 )}
             </div>
         </div>
