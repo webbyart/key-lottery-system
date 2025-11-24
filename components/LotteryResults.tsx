@@ -85,7 +85,6 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
     const getCustomerName = (id: string) => customers.find(c => c.id === id)?.name || 'N/A';
 
     // Core fetcher for a single date
-    // Accepts either ISO (YYYY-MM-DD) or ID (DDMMYYYY)
     const fetchSingleResult = async (dateInput: string): Promise<HistoryResult | null> => {
         const isIdFormat = /^\d{8}$/.test(dateInput);
         const apiId = isIdFormat ? dateInput : isoToApiId(dateInput);
@@ -93,47 +92,7 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
         
         let result: HistoryResult | null = null;
 
-        // 1. Try GLO API (using calculated GLO date format DD/MM/YYYY)
-        // Note: GLO often blocks client-side calls due to CORS, but we keep logic just in case.
-        try {
-            const gloDate = `${apiId.substring(0,2)}/${apiId.substring(2,4)}/${apiId.substring(4,8)}`;
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000); 
-
-            const response = await fetch("https://www.glo.or.th/api/checking/getLotteryResult", {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ date: gloDate }),
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data?.status === 'success' && data?.response?.data) {
-                    const d = data.response.data;
-                    const firstPrize = d.first?.number?.[0] || '';
-                    result = {
-                        date: isoDate,
-                        apiId: apiId,
-                        dateThai: formatThaiDate(isoDate),
-                        firstPrizeFull: firstPrize,
-                        top3: firstPrize.slice(-3),
-                        bottom2: d.last2?.number?.[0] || '',
-                        front3_1: d.last3f?.number?.[0] || '',
-                        front3_2: d.last3f?.number?.[1] || '',
-                        bottom3_1: d.last3b?.number?.[0] || '',
-                        bottom3_2: d.last3b?.number?.[1] || '',
-                    };
-                }
-            }
-        } catch (e) {
-            // GLO failed, proceed to fallback
-        }
-
-        if (result) return result;
-
-        // 2. Try RayRiffy API (Primary Source)
+        // Try RayRiffy API
         try {
             const response = await fetch(`https://lotto.api.rayriffy.com/lotto/${apiId}`);
             if (response.ok) {
@@ -184,7 +143,7 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                 }
             }
         } catch (e) {
-            console.warn(`Fallback fetch failed for ${apiId}`, e);
+            console.warn(`Fetch failed for ${apiId}`, e);
         }
 
         return result;
@@ -238,14 +197,14 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                 const historyIds = allIds.slice(0, 24);
                 const results: HistoryResult[] = [];
                 
-                // Fetch in small batches
+                // Fetch in small batches to respect potential API limits
                 const batchSize = 6;
                 for (let i = 0; i < historyIds.length; i += batchSize) {
                     const batch = historyIds.slice(i, i + batchSize);
                     const batchResults = await Promise.all(batch.map(id => fetchSingleResult(id)));
                     results.push(...batchResults.filter((r): r is HistoryResult => r !== null));
-                    // Small delay
-                    await new Promise(r => setTimeout(r, 100));
+                    // Small delay to be polite to the API
+                    await new Promise(r => setTimeout(r, 50));
                 }
                 
                 setHistory(results);
@@ -274,11 +233,9 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
         }
     };
     
-    // Function exposed to button for manual refresh/fetch specific date
     const getLotteryResult = async () => {
         setIsLoading(true);
         try {
-            // drawDate is ISO, fetchSingleResult handles conversion
             const result = await fetchSingleResult(drawDate);
             if (result) {
                  setWinningNumbers({
@@ -567,7 +524,7 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
 
             {/* History Table Section */}
             <div className="mt-8 bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
-                <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-4">สถิติผลสลากกินแบ่งรัฐบาล ย้อนหลัง 12 เดือน (24 งวดล่าสุด)</h2>
+                <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-4">สถิติผลสลากกินแบ่งรัฐบาล ย้อนหลัง 12 เดือน</h2>
                 
                 {loadingHistory && history.length === 0 ? (
                     <div className="flex justify-center p-8">
@@ -583,7 +540,7 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                                     <th scope="col" className="px-4 py-3 text-center">เลขหน้า 3 ตัว</th>
                                     <th scope="col" className="px-4 py-3 text-center">เลขท้าย 3 ตัว</th>
                                     <th scope="col" className="px-4 py-3 text-center">เลขท้าย 2 ตัว</th>
-                                    <th scope="col" className="px-4 py-3 text-center">เลือก</th>
+                                    <th scope="col" className="px-4 py-3 text-center">ตรวจทาน</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -615,9 +572,9 @@ export const LotteryResults: React.FC<LotteryResultsProps> = ({ entries, custome
                                         <td className="px-4 py-3 text-center">
                                             <button 
                                                 onClick={() => loadFromHistory(item)}
-                                                className="text-xs bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:bg-slate-700 dark:text-indigo-300 dark:hover:bg-slate-600 px-2 py-1 rounded border border-indigo-200 dark:border-slate-600"
+                                                className="text-xs bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:bg-slate-700 dark:text-indigo-300 dark:hover:bg-slate-600 px-3 py-1.5 rounded border border-indigo-200 dark:border-slate-600 font-medium"
                                             >
-                                                ตรวจสอบ
+                                                ตรวจทาน
                                             </button>
                                         </td>
                                     </tr>
